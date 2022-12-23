@@ -24,6 +24,7 @@ if exists('g:loaded_jetpack')
   finish
 endif
 let g:loaded_jetpack = 1
+
 if has('nvim')
   function! s:execute(code) abort
     return v:lua.vim.cmd(a:code)
@@ -47,38 +48,11 @@ else
   endfunction
 endif
 
-if has('nvim')
-  function! s:execute(code) abort
-    call v:lua.vim.cmd(a:code)
-  endfunction
-else
-  function! s:execute(code) abort
-    let temp = tempname()
-    call writefile([a:code], temp)
-    execute 'source' temp
-    call delete(temp)
-  endfunction
-endif
-
 function! s:packadd(pkg_name, bang='') abort
   if isdirectory(s:optdir . '/'. a:pkg_name)
     execute 'packadd'.a:bang a:pkg_name
   endif
 endfunction
-
-function! s:autocmd_add(autocmds) abort
-  call autocmd_add(a:autocmds)
-endfunction
-
-if !exists('?autocmd_add')
-  function! s:autocmd_add(autocmds) abort
-    for a in a:autocmds
-      call extend(a, {'group': '', 'pattern': '*', 'cmd': ':', 'once': v:false}, 'keep')
-      let once = a.once ? '++once' : ''
-      execute 'autocmd' a.group a.event a.pattern once a.cmd
-    endfor
-  endfunction
-endif
 
 function! s:autocmd_add(autocmds) abort
   call autocmd_add(a:autocmds)
@@ -574,8 +548,6 @@ function! s:is_merged(pkg) abort
   return !a:pkg.opt
         \ && empty(a:pkg.do)
         \ && empty(a:pkg.dir)
-        \ && empty(a:pkg.setup)
-        \ && empty(a:pkg.config)
 endfunction
 
 function! s:gets(pkg, keys, default) abort
@@ -598,18 +570,25 @@ function! jetpack#add(plugin, ...) abort
   let url = local ? expand(a:plugin) : (a:plugin !~# ':' ? 'https://github.com/' : '') . a:plugin
   let path = s:srcdir . '/' .  substitute(url, 'https\?://', '', '')
   let path = local ? expand(a:plugin) : expand(s:gets(opts, ['dir', 'path'], [path])[0])
-  let on = s:gets(opts, [
-  \ 'on',
-  \ 'keys', 'on_map',
-  \ 'cmd', 'on_cmd',
-  \ 'event', 'on_event'
-  \ ], [])
-  let filetypes = s:gets(opts, ['for', 'ft', 'on_ft'], [])
-  call extend(on, map(filetypes, {_, ft -> 'FileType ' . ft}))
   let name = s:gets(opts, ['as', 'name'], [fnamemodify(a:plugin, ':t')])[0]
-  let requires = s:gets(opts, ['requires', 'depends'], [])
-  call map(requires, { _, r -> r =~# '/' ? substitute(r, '.*/', '', '') : r })
+  let dependees = s:gets(opts, ['requires', 'depends'], [])
+  call map(dependees, { _, r -> r =~# '/' ? substitute(r, '.*/', '', '') : r })
+  let dependers_before = s:gets(opts, ['before', 'on_source'], [])
+  call map(dependers_before, { _, r -> r =~# '/' ? substitute(r, '.*/', '', '') : r })
+  let dependers_after = s:gets(opts, ['after', 'on_post_source'], [])
+  call map(dependers_after, { _, r -> r =~# '/' ? substitute(r, '.*/', '', '') : r })
+  let keys = s:gets(opts, ['on', 'keys', 'on_map'], [])
+  call filter(keys, { _, k -> k =~? '^<Plug>' })
+  let cmd = s:gets(opts, ['on', 'cmd', 'on_cmd'], [])
+  call filter(cmd, { _, k -> k =~? '^[A-Z]\+$' })
+  let event = s:gets(opts, ['on', 'event', 'on_event'], [])
+  call filter(event, { _, v -> exists('##' . substitute(v, ' .*', '', ''))})
+  let filetypes = s:gets(opts, ['for', 'ft', 'on_ft'], [])
+  call extend(event, map(filetypes, {_, ft -> 'FileType ' . ft}))
   let pkg  = {
+  \   'keys': keys,
+  \   'cmd': cmd,
+  \   'event': event,
   \   'url': url,
   \   'local': local,
   \   'branch': get(opts, 'branch', ''),
@@ -619,15 +598,16 @@ function! jetpack#add(plugin, ...) abort
   \   'do': s:gets(opts, ['do', 'run', 'build'], [''])[0],
   \   'frozen': s:gets(opts, ['frozen', 'lock'], [v:false])[0],
   \   'dir': s:gets(opts, ['dir', 'path'], [''])[0],
-  \   'on': on,
-  \   'opt': !empty(on) || get(opts, 'opt'),
+  \   'opt': !empty(dependers_before) || !empty(dependers_after) || !empty(cmd)|| !empty(keys) || !empty(event) || get(opts, 'opt'),
   \   'path': path,
   \   'status': [s:status.pending],
   \   'output': '',
   \   'code': get(opts, 'hook_add', ''),
   \   'setup': s:gets(opts, ['setup', 'hook_source'], [''])[0],
   \   'config': s:gets(opts, ['config', 'hook_post_source'], [''])[0],
-  \   'requires': requires,
+  \   'dependees': dependees,
+  \   'dependers_before': dependers_before,
+  \   'dependers_after': dependers_after,
   \ }
   let pkg.merged = get(opts, 'merged', s:is_merged(pkg))
   let s:declared_packages[name] = pkg
@@ -686,7 +666,7 @@ endfunction
 " Not called during startup
 function! jetpack#load(pkg_name) abort
   let pkg = get(s:available_packages, a:pkg_name, {})
-  if !jetpack#tap(a:pkg_name) || pkg.merged
+  if !jetpack#tap(a:pkg_name)
     return v:false
   endif
   " Load package
@@ -747,22 +727,58 @@ function! jetpack#end() abort
   syntax off
   filetype plugin indent off
 
+  autocmd Jetpack User JetpackSetup :
+  autocmd Jetpack User JetpackConfig :
+  autocmd Jetpack SourcePost $MYVIMRC ++once doautocmd <nomodeline> Jetpack User JetpackSetup
+  autocmd Jetpack VimEnter * ++once doautocmd <nomodeline> Jetpack User JetpackConfig
+
   if sort(keys(s:declared_packages)) != sort(keys(s:available_packages))
     echomsg 'Some packages are not synchronized. Run :JetpackSync'
   endif
 
   for [pkg_name, pkg] in items(s:declared_packages)
-    for dep_name in pkg.requires
+    for dep_name in pkg.dependees
       let cmd = 'call jetpack#load('.string(dep_name).')'
       let pattern = 'JetpackPre:'.pkg_name
       call s:autocmd_add([{ 'group': 'Jetpack', 'event': 'User', 'pattern': pattern, 'cmd': cmd, 'once': v:true }])
+    endfor
+    for dep_name in pkg.dependers_before
+      let cmd = 'call jetpack#load('.string(pkg_name).')'
+      let pattern = 'JetpackPre:'.dep_name
+      call s:autocmd_add([{ 'group': 'Jetpack', 'event': 'User', 'pattern': pattern, 'cmd': cmd, 'once': v:true }])
+    endfor
+    let slug = substitute(pkg_name, '\W\+', '_', 'g')
+    let s:loaded_count_{slug} = len(pkg.dependers_after)
+    for dep_name in pkg.dependers_after
+      let cmd = 'if s:loaded_count_'.slug.' == 1 '.
+              \ '|  call jetpack#load('.string(pkg_name).') '.
+              \ '| else'.
+              \ '|  let s:loaded_count_'.slug.' -= 1 '
+              \ '| endif'
+      let pattern = 'JetpackPost:'.dep_name
+      call s:autocmd_add([{ 'group': 'Jetpack', 'event': 'User', 'pattern': pattern, 'cmd': cmd, 'once': v:true }])
+    endfor
+    for it in pkg.keys
+      let s:maps[it] = add(get(s:maps, it, []), pkg_name)
+      execute printf('inoremap <silent> %s <C-\><C-O>:<C-U>call <SID>load_map(%s, %s, 0, "")<CR>', it, string(it), s:maps[it])
+      execute printf('nnoremap <silent> %s :<C-U>call <SID>load_map(%s, %s, 1, "")<CR>', it, string(it), s:maps[it])
+      execute printf('vnoremap <silent> %s :<C-U>call <SID>load_map(%s, %s, 1, "gv")<CR>', it, string(it), s:maps[it])
+      execute printf('onoremap <silent> %s :<C-U>call <SID>load_map(%s, %s, 1, "")<CR>', it, string(it), s:maps[it])
+    endfor
+    for it in pkg.event
+      let cmd = 'call jetpack#load('.string(pkg_name).')'
+      let [event, pattern] = split(it . (it =~# ' ' ? '' : ' *'), ' ')
+      call s:autocmd_add([{ 'group': 'Jetpack', 'event': event, 'pattern': pattern, 'cmd': cmd, 'once': v:true }])
+    endfor
+    for it in pkg.cmd
+      let cmd = substitute(it, '^:', '', '')
+      let s:cmds[cmd] = add(get(s:cmds, cmd, []), pkg_name)
+      execute printf('command! -range -nargs=* %s :call <SID>load_cmd(%s, %s, <f-args>)', cmd, string(cmd), s:cmds[cmd])
     endfor
     if !empty(pkg.setup)
       let pattern = 'JetpackPre:'.pkg_name
       let cmd = 'call s:execute(s:declared_packages['.string(pkg_name).'].setup)'
       call s:autocmd_add([{ 'group': 'Jetpack', 'event': 'User', 'pattern': pattern, 'cmd': cmd, 'once': v:true }])
-      let &runtimepath .= printf(',%s/%s', pkg.dir, pkg.rtp)
-      continue
     endif
     if !empty(pkg.config)
       let pattern = 'JetpackPost:'.pkg_name
@@ -786,28 +802,8 @@ function! jetpack#end() abort
       call s:autocmd_add([{ 'group': 'Jetpack', 'event': 'User', 'pattern': 'JetpackConfig', 'cmd': cmd, 'once': v:true }])
       continue
     endif
-    for it in pkg.on
-      if it =~? '^<Plug>'
-        let s:maps[it] = add(get(s:maps, it, []), pkg_name)
-        execute printf('inoremap <silent> %s <C-\><C-O>:<C-U>call <SID>load_map(%s, %s, 0, "")<CR>', it, string(it), s:maps[it])
-        execute printf('nnoremap <silent> %s :<C-U>call <SID>load_map(%s, %s, 1, "")<CR>', it, string(it), s:maps[it])
-        execute printf('vnoremap <silent> %s :<C-U>call <SID>load_map(%s, %s, 1, "gv")<CR>', it, string(it), s:maps[it])
-        execute printf('onoremap <silent> %s :<C-U>call <SID>load_map(%s, %s, 1, "")<CR>', it, string(it), s:maps[it])
-      elseif exists('##'.substitute(it, ' .*', '', ''))
-        let cmd = 'call jetpack#load('.string(pkg_name).')'
-        let [event, pattern] = split(it . (it =~# ' ' ? '' : ' *'), ' ')
-        call s:autocmd_add([{ 'group': 'Jetpack', 'event': event, 'pattern': pattern, 'cmd': cmd, 'once': v:true }])
-      else
-        let cmd = substitute(it, '^:', '', '')
-        let s:cmds[cmd] = add(get(s:cmds, cmd, []), pkg_name)
-        execute printf('command! -range -nargs=* %s :call <SID>load_cmd(%s, %s, <f-args>)', cmd, string(cmd), s:cmds[cmd])
-      endif
-    endfor
   endfor
   call s:packadd('_', '!')
-
-  autocmd Jetpack SourcePre */jetpack/opt/*/plugin/**/* ++once doautocmd <nomodeline> Jetpack User JetpackSetup
-  autocmd Jetpack VimEnter * ++once doautocmd <nomodeline> Jetpack User JetpackConfig
 
   syntax enable
   filetype plugin indent on

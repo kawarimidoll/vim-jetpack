@@ -27,6 +27,7 @@ function s:setup(...)
   endfor
   call jetpack#end()
   call jetpack#sync()
+  call feedkeys("\<CR>", 'n')
 endfunction
 
 function s:assert.filereadable(file)
@@ -217,10 +218,25 @@ function s:suite.on_option_plug()
   augroup END
   call s:assert.cmd_not_exists('EskkMap')
   call s:assert.false(s:loaded_eskk_vim)
+  call feedkeys('', 'x')
   call feedkeys("i\<Plug>(eskk:toggle)\<Esc>", 'x')
   call feedkeys('', 'x')
   call s:assert.cmd_exists('EskkMap')
   call s:assert.true(s:loaded_eskk_vim)
+endfunction
+
+function s:suite.on_source()
+  call s:setup(
+  \ ['ctrlpvim/ctrlp.vim', { 'opt': 1 }],
+  \ ['tracyone/ctrlp-findfile', { 'on_source': 'ctrlp.vim' }]
+  \ )
+  call s:assert.isdirectory(s:optdir . '/ctrlp.vim')
+  call s:assert.isdirectory(s:optdir . '/ctrlp-findfile')
+  call s:assert.cmd_not_exists('CtrlP')
+  call s:assert.cmd_not_exists('CtrlPFindFile')
+  call jetpack#load('ctrlp.vim')
+  call s:assert.cmd_exists('CtrlP')
+  call s:assert.cmd_exists('CtrlPFindFile')
 endfunction
 
 function s:suite.on_option_event()
@@ -380,12 +396,6 @@ require('jetpack').sync()
 end
 EOL
 
-function s:suite.packer_style_simple()
-  lua packer_setup('EdenEast/nightfox.nvim')
-  call s:assert.isnotdirectory(s:optdir . '/nightfox.nvim')
-  call s:assert.filereadable(s:optdir . '/_/plugin/nightfox.vim')
-endfunction
-
 function s:suite.packer_style_complex()
   let g:nightfox_setup_done = 0
   let g:nightfox_config_done = 0
@@ -394,7 +404,7 @@ function s:suite.packer_style_complex()
 lua<<EOF
   packer_setup({
     'EdenEast/nightfox.nvim',
-    config = function()
+    setup = function()
       require('jetpack.util').command('let g:nightfox_setup_done = 1')
     end,
     config = function()
@@ -402,6 +412,7 @@ lua<<EOF
     end
   })
 EOF
+  call jetpack#load('nightfox.nvim')
   call s:assert.isnotdirectory(s:optdir . '/nightfox.nvim')
   call s:assert.filereadable(s:optdir . '/_/plugin/nightfox.vim')
   call s:assert.equals(g:nightfox_setup_done, 1)
@@ -415,18 +426,18 @@ endif
 function s:suite.pkg_config()
 lua <<EOL
   packer_setup({
-  'nvim-tree/nvim-web-devicons',
-  config = function()
-    require('nvim-web-devicons').set_icon({
-      zsh = {
-        icon = '',
-      },
-    })
-  end,
+    'nvim-tree/nvim-web-devicons',
+    config = function()
+      require('nvim-web-devicons').set_icon({
+        zsh = {
+          icon = '',
+        },
+      })
+    end,
   })
 EOL
-  call s:assert.isdirectory(s:optdir . '/nvim-web-devicons')
-  call s:assert.notfilereadable(s:optdir . '/_/plugin/nvim-web-devicons.vim')
+  call s:assert.isnotdirectory(s:optdir . '/nvim-web-devicons')
+  call s:assert.filereadable(s:optdir . '/_/plugin/nvim-web-devicons.vim')
   call s:assert.notloaded('nvim-web-devicons')
   call s:assert.true(jetpack#load('nvim-web-devicons'), 'nvim-web-devicons cannot be loaded')
   call s:assert.loaded('nvim-web-devicons') " means config is called
@@ -450,7 +461,8 @@ lua <<EOL
   end
   })
 EOL
-  call s:assert.isdirectory(s:optdir . '/filetype.nvim')
+  call s:assert.isnotdirectory(s:optdir . '/filetype.nvim')
+  call s:assert.isdirectory(s:optdir . '/_/lua/filetype')
   call s:assert.notloaded('filetype')
   call s:assert.true(jetpack#load('filetype.nvim'), 'filetype.nvim cannot be loaded')
   call s:assert.loaded('filetype') " means config is called
@@ -472,7 +484,8 @@ lua <<EOL
 EOL
   call s:assert.isdirectory(s:optdir . '/nvim-cmp')
   call s:assert.isdirectory(s:optdir . '/cmp-buffer')
-  call s:assert.notfilereadable(s:optdir . '/_/plugin/cmp.lua')
+  call s:assert.isnotdirectory(s:optdir . '/_/lua/cmp')
+  call s:assert.isnotdirectory(s:optdir . '/_/lua/cmp_buffer')
   call s:assert.true(jetpack#load('cmp-buffer'), 'cmp-buffer cannot be loaded')
   call s:assert.true(jetpack#tap('nvim-cmp'), 'nvim-cmp is not loaded') " means nvim-cmp is also loaded
   call s:assert.loaded('cmp_buffer') " means cmp-buffer/after/plugin is sourced
