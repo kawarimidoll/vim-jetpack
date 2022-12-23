@@ -753,7 +753,7 @@ function! jetpack#end() abort
       let cmd = 'if s:loaded_count_'.slug.' == 1 '.
               \ '|  call jetpack#load('.string(pkg_name).') '.
               \ '| else'.
-              \ '|  let s:loaded_count_'.slug.' -= 1 '
+              \ '|  let s:loaded_count_'.slug.' -= 1 '.
               \ '| endif'
       let pattern = 'JetpackPost:'.dep_name
       call s:autocmd_add([{ 'group': 'Jetpack', 'event': 'User', 'pattern': pattern, 'cmd': cmd, 'once': v:true }])
